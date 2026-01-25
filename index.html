@@ -245,20 +245,43 @@
   </div>
 
   <div id="tab-picking" class="container mt-4 tab-content">
-    <div class="d-flex justify-content-between align-items-center mb-3 ps-1">
-      <h6 class="text-muted mb-0">待出貨清單</h6>
-      <div>
-        <!-- V2.3: 移除匯入按鈕 -->
-        <button type="button" onclick="copyPickingText()"
-          class="btn btn-sm btn-outline-secondary rounded-pill px-3 me-2">
-          <i class="bi bi-clipboard me-1"></i>複製
+    <div class="mb-4 ps-1">
+      <h6 class="text-muted mb-3 ps-1" style="font-size: 0.9rem; letter-spacing: 1px;">待出貨清單</h6>
+
+      <div class="d-flex flex-column gap-3">
+        <button type="button" onclick="manualImport()"
+          class="btn btn-warning w-100 py-3 shadow-sm border-0 position-relative overflow-hidden"
+          style="border-radius: 16px; color: #1b4332;">
+          <div class="d-flex align-items-center justify-content-center">
+            <i class="bi bi-file-earmark-text-fill fs-4 me-2"></i>
+            <span class="fw-bold fs-5">產生撿貨單</span>
+          </div>
+          <div class="position-absolute top-0 start-0 w-100 h-100"
+            style="background: linear-gradient(45deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0) 100%); pointer-events: none;">
+          </div>
         </button>
-        <button type="button" onclick="loadPickingList()" class="btn btn-sm btn-outline-success rounded-pill px-3">
-          <i class="bi bi-arrow-clockwise me-1"></i>刷新
+
+        <button type="button" onclick="undoImport()" class="btn btn-outline-danger w-100 py-2 border-2 fw-bold"
+          style="border-radius: 12px; font-size: 0.95rem;">
+          <i class="bi bi-arrow-counterclockwise me-1"></i>
+          匯入資料有誤？回復上一步
+        </button>
+      </div>
+
+      <div class="d-flex justify-content-end mt-3 gap-2">
+        <button type="button" onclick="copyPickingText()"
+          class="btn btn-sm btn-light text-secondary border rounded-pill px-3">
+          <i class="bi bi-clipboard me-1"></i>複製文字
+        </button>
+        <button type="button" onclick="loadPickingList()"
+          class="btn btn-sm btn-light text-success border border-success rounded-pill px-3">
+          <i class="bi bi-arrow-clockwise me-1"></i>刷新清單
         </button>
       </div>
     </div>
+
     <div id="pickingListContainer"></div>
+
     <div id="finishPickingBtnArea" class="mt-4 mb-5" style="display:none;">
       <div class="card p-3 border-success bg-light">
         <h6 class="text-success fw-bold"><i class="bi bi-check-circle-fill me-2"></i>作業完成</h6>
@@ -413,6 +436,56 @@
         .submitProduction(sku, qty, user); // 傳遞 user
     }
 
+    // 1. 產生撿貨單
+    function manualImport() {
+      const user = getUser();
+      Swal.fire({
+        title: '產生撿貨單？', // 修改標題
+        html: "這將會扣除庫存。<br>請確認暫存區已貼上資料。",
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#ffc107',
+        confirmButtonText: '執行',
+        customClass: { confirmButton: 'text-dark fw-bold' }
+      }).then((result) => {
+        // ... 保持不變
+        if (result.isConfirmed) {
+          showLoading(true);
+          google.script.run.withSuccessHandler(msg => {
+            showLoading(false);
+            if (msg.includes('❌') || msg.includes('⚠️')) Swal.fire('注意', msg, 'warning');
+            else { Toast.fire({ icon: 'success', title: '完成' }); loadPickingList(); }
+          }).withFailureHandler(err => { showLoading(false); Swal.fire('錯誤', err.message, 'error'); })
+            .triggerManualImport(user);
+        }
+      });
+    }
+
+    // 2. 匯入資料有誤回復上一步
+    function undoImport() {
+      const user = getUser();
+      Swal.fire({
+        title: '匯入資料有誤？', // 修改標題
+        html: "這將會<b>刪除</b>剛剛匯入的訂單紀錄<br>並<b>復原</b>對應的庫存。",
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#dc3545',
+        confirmButtonText: '回復上一步', // 修改按鈕文字
+        focusCancel: true
+      }).then((result) => {
+        // ... 保持不變
+        if (result.isConfirmed) {
+          showLoading(true);
+          google.script.run.withSuccessHandler(msg => {
+            showLoading(false);
+            if (msg.includes('❌') || msg.includes('⚠️')) Swal.fire('注意', msg, 'warning');
+            else { Swal.fire('已復原', msg, 'success'); loadPickingList(); }
+          }).withFailureHandler(err => { showLoading(false); Swal.fire('錯誤', err.message, 'error'); })
+            .triggerUndoImport(user);
+        }
+      });
+    }
+
     // --- Inventory Logic (Modified) ---
     function editStock(sku, name, currentQty) {
       const user = getUser();
@@ -426,20 +499,24 @@
         inputValidator: (value) => { if (!value) return '請輸入數字'; }
       }).then((result) => {
         if (result.isConfirmed) {
-          const newQty = result.value;
+          const newQty = parseInt(result.value);
           if (newQty == currentQty) return;
-          showLoading(true);
-          google.script.run
-            .withSuccessHandler(() => {
-              showLoading(false);
-              Toast.fire({ icon: 'success', title: '修正完成', text: `庫存已更新為 ${newQty}` });
-              loadInventory();
-            })
-            .withFailureHandler(err => {
-              showLoading(false);
-              Swal.fire('錯誤', err.message, 'error');
-            })
-            .adjustInventory(sku, newQty, user); // 傳遞 user
+
+          // Optimistic UI: 先改畫面
+          const targetEl = document.querySelector(`[onclick="editStock('${sku}','${name}',${currentQty})"]`);
+          if (targetEl) {
+            targetEl.innerText = newQty;
+            targetEl.setAttribute('onclick', `editStock('${sku}','${name}',${newQty})`);
+            // 簡單閃爍一下表示變更
+            targetEl.style.color = '#2d6a4f';
+          }
+
+          // 後端默默執行
+          google.script.run.withSuccessHandler(() => {
+            Toast.fire({ icon: 'success', title: '庫存已修正' });
+            // 為了保險，後端回來後還是悄悄刷新一次，確保一致
+            // loadInventory(); // 可以選擇不呼叫這行，體驗更順
+          }).adjustInventory(sku, newQty, getUser());
         }
       });
     }

@@ -99,6 +99,29 @@ function getInventoryStatus() {
   return result;
 }
 
+// 產生撿貨單接口
+function triggerManualImport(operator) {
+  const lock = LockService.getScriptLock();
+  try {
+    if (!lock.tryLock(30000)) throw new Error('系統忙碌中');
+    const resultMsg = generateDailyPickingList(true);
+    console.log(`Web App 匯入執行者: ${operator}`);
+    return resultMsg;
+  } catch (e) { throw e; } finally { lock.releaseLock(); }
+}
+
+// 【新增】撤銷接口
+function triggerUndoImport(operator) {
+  const lock = LockService.getScriptLock();
+  try {
+    if (!lock.tryLock(30000)) throw new Error('系統忙碌中');
+    // 呼叫 main.gs 的撤銷功能
+    const resultMsg = undoLastImport(true);
+    console.log(`Web App 撤銷執行者: ${operator}`);
+    return resultMsg;
+  } catch (e) { throw e; } finally { lock.releaseLock(); }
+}
+
 // --- 寫入類函式 (LockService 保護) ---
 
 function submitProduction(sku, qty, operator) {
