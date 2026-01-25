@@ -1,10 +1,10 @@
 /**
- * main.gs (V2.6_ForceUpdate)
- * 修正：移除過度保護的 try-catch，確保錯誤能被看見；強制執行庫存更新。
+ * main.gs (V2.7_CleanDisplay)
+ * 修改重點：優化撿貨單顯示邏輯，針對「1大 + 蝦皮店到店」進行極簡化顯示。
  */
 
 function generateDailyPickingList(isWebApp = false) {
-  const ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   const stagingSheet = ss.getSheetByName('[00_數據暫存區]');
   if (!stagingSheet) return response("❌ 錯誤：找不到 [00_數據暫存區]", isWebApp);
 
@@ -43,16 +43,15 @@ function generateDailyPickingList(isWebApp = false) {
     return response('⚠️ 暫存區無有效訂單 (或解析器未抓到資料)', isWebApp);
   }
 
-  // 4. 寫入銷售 DB (炸開扣庫存)
+  // 4. 寫入銷售 DB (維持炸開扣庫存)
   saveToSalesDatabase(allOrders);
 
-  // 5. 寫入撿貨單 (合併顯示)
+  // 5. 寫入撿貨單 (套用新的極簡邏輯)
   saveToPickingList(allOrders);
 
-  // 強制寫入 Sheet，避免資料還在緩衝區
   SpreadsheetApp.flush(); 
 
-  // 6. 更新庫存 (關鍵修正：拿掉 try-catch 或讓它報錯)
+  // 6. 更新庫存
   let invMsg = "";
   if (typeof InventoryManager !== 'undefined') {
     try {
@@ -72,9 +71,9 @@ function generateDailyPickingList(isWebApp = false) {
   return response(`${finalStatus}！\n共產出 ${allOrders.length} 筆撿貨單。\n[${invMsg}]`, isWebApp);
 }
 
-// ... (undoLastImport, saveToSalesDatabase, response 函式保持不變，請保留原本的) ...
+// ... (undoLastImport 保持不變) ...
 function undoLastImport(isWebApp = false) {
-  const ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   const stagingSheet = ss.getSheetByName('[00_數據暫存區]');
   const shopeeRawData = stagingSheet.getRange("A2:A").getValues().flat().filter(String).join("\n");
   const lastRow = stagingSheet.getLastRow();
@@ -117,7 +116,7 @@ function response(msg, isWebApp) {
 }
 
 function saveToSalesDatabase(orders) {
-  const sheet = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A").getSheetByName('[03_銷售數據池]');
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('[03_銷售數據池]');
   const newRows = [];
   orders.forEach(order => {
     const items = expandSku(order.sku, order.qty);
@@ -128,9 +127,14 @@ function saveToSalesDatabase(orders) {
   if (newRows.length > 0) sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, 6).setValues(newRows);
 }
 
+/**
+ * 寫入 [05_撿貨單]
+ * 修改：套用極簡化顯示邏輯
+ */
 function saveToPickingList(orders) {
-  const sheet = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A").getSheetByName('[05_撿貨單]');
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('[05_撿貨單]');
   if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).clearContent();
+
   const ordersMap = {};
   orders.forEach(order => {
     const oid = order.orderId;
@@ -141,18 +145,42 @@ function saveToPickingList(orders) {
     if (!ordersMap[oid].items[abbr]) ordersMap[oid].items[abbr] = 0;
     ordersMap[oid].items[abbr] += order.qty;
   });
+
   const newRows = Object.keys(ordersMap).map(oid => {
     const o = ordersMap[oid];
     const itemStr = Object.entries(o.items).map(([abbr, qty]) => `${qty}${abbr}`).join(' ');
+    
+    // 取得物流單號後4碼
     let trackingDisplay = "";
     if (o.tracking && o.tracking.length >= 4) {
       trackingDisplay = o.tracking.slice(-4);
     } else {
       trackingDisplay = o.tracking;
     }
-    const finalStr = `${itemStr} ${trackingDisplay} (${o.logistics})`;
+
+    // --- 極簡顯示邏輯開始 ---
+    let finalStr = itemStr;
+    const isShopeeXpress = o.logistics.includes("蝦皮店到店");
+    const isOneBig = (itemStr === "1大"); // 嚴格比對是否剛好是 "1大"
+
+    // 1. 處理單號顯示
+    // 規則：如果是 (蝦皮店到店 且 1大)，則隱藏單號；否則都要顯示
+    if (trackingDisplay) {
+      if ( !(isShopeeXpress && isOneBig) ) {
+        finalStr += ` ${trackingDisplay}`;
+      }
+    }
+
+    // 2. 處理物流名稱顯示
+    // 規則：如果是 蝦皮店到店，則隱藏名稱；否則都要顯示
+    if (!isShopeeXpress) {
+      finalStr += ` (${o.logistics})`;
+    }
+    // --- 極簡顯示邏輯結束 ---
+
     return [o.date, finalStr, oid, o.logistics];
   });
+
   if (newRows.length > 0) sheet.getRange(2, 1, newRows.length, 4).setValues(newRows);
 }
 
