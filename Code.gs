@@ -44,8 +44,10 @@ function getPickingList() {
   const sheet = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A").getSheetByName('[05_撿貨單]');
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  // 讀取 [日期, 撿貨代碼, 訂單號, 物流]
-  const data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+  
+  // 修改：讀取 5 欄 [日期, 撿貨代碼, 訂單號, 物流, 平台]
+  const data = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
+  
   return data.map(row => {
     if (row[0] instanceof Date) row[0] = Utilities.formatDate(row[0], Session.getScriptTimeZone(), "MM/dd");
     return row;

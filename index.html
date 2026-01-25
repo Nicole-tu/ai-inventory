@@ -280,6 +280,8 @@
         <h4 class="fw-bold mb-0" style="color: var(--primary-color); letter-spacing: 1px;">
           <i class="bi bi-clipboard-data-fill me-2"></i>待出貨清單
         </h4>
+        <span id="pickingCountBadge" class="badge rounded-pill bg-danger ms-2 fs-6 shadow-sm"
+          style="display:none; vertical-align: middle;">0 筆</span>
       </div>
 
       <div class="d-flex flex-column flex-md-row gap-3 align-items-md-center">
@@ -540,13 +542,68 @@
     }
 
     // --- Picking List Render ---
-    let currentPickingData = [];
-    function loadPickingList() { showLoading(true); google.script.run.withSuccessHandler(renderPickingList).withFailureHandler(() => showLoading(false)).getPickingList(); }
+    function loadPickingList() {
+      showLoading(true);
+      google.script.run.withSuccessHandler(renderPickingList).withFailureHandler(() => showLoading(false)).getPickingList();
+    }
+
     function renderPickingList(d) {
-      showLoading(false); currentPickingData = d; const c = document.getElementById('pickingListContainer');
-      if (!d || !d.length) { c.innerHTML = '<div class="text-center mt-5"><i class="bi bi-rocket-takeoff-fill display-1 text-success opacity-50"></i><h4 class="fw-bold mt-3" style="color:var(--primary-color);">目前無待出貨清單</h4><p class="text-muted">準備迎接下一波爆單！</p></div>'; document.getElementById('finishPickingBtnArea').style.display = 'none'; return; }
+      showLoading(false);
+      currentPickingData = d;
+      const c = document.getElementById('pickingListContainer');
+      const countBadge = document.getElementById('pickingCountBadge');
+
+      if (!d || !d.length) {
+        c.innerHTML = '<div class="text-center mt-5"><i class="bi bi-rocket-takeoff-fill display-1 text-success opacity-50"></i><h4 class="fw-bold mt-3" style="color:var(--primary-color);">目前無待出貨清單</h4><p class="text-muted">準備迎接下一波爆單！</p></div>';
+        document.getElementById('finishPickingBtnArea').style.display = 'none';
+        if (countBadge) countBadge.style.display = 'none';
+        return;
+      }
+
+      // --- 統計邏輯 (V2.9) ---
+      let shopeeCount = 0;
+      let wooCount = 0;
+
+      d.forEach(row => {
+        // row[4] 是平台欄位 (Shopee / WooCommerce)
+        const platform = row[4] ? row[4].toLowerCase() : "";
+        if (platform.includes('shopee')) {
+          shopeeCount++;
+        } else if (platform.includes('woo')) {
+          wooCount++;
+        } else {
+          // 如果沒抓到平台 (舊資料)，暫時歸類給蝦皮或不計? 
+          // 假設預設為蝦皮
+          shopeeCount++;
+        }
+      });
+
+      const total = d.length;
+
+      // Update Badge (顯示詳細統計)
+      if (countBadge) {
+        // 格式: 官網: 1 | 蝦皮: 12 | 總共: 13
+        countBadge.innerHTML = `官網: ${wooCount} <span class="mx-1 opacity-50">|</span> 蝦皮: ${shopeeCount} <span class="mx-1 opacity-50">|</span> 總共: ${total} 筆`;
+        countBadge.className = "badge bg-danger ms-2 shadow-sm align-middle"; // 確保樣式正確
+        countBadge.style.display = 'inline-block';
+        countBadge.style.fontWeight = '500';
+        countBadge.style.letterSpacing = '0.5px';
+      }
+
       document.getElementById('finishPickingBtnArea').style.display = 'block';
-      c.innerHTML = d.map(r => `<div class="card p-3"><h5 class="fw-bold mb-2" style="color:#2d6a4f; line-height:1.4">${r[1]}</h5><div class="d-flex justify-content-between text-muted small border-top pt-2"><div>${r[2]}</div><span class="badge bg-light text-dark border">${r[3]}</span></div></div>`).join('');
+
+      // Render Cards
+      c.innerHTML = d.map(r => `
+        <div class="card p-3">
+          <h5 class="fw-bold mb-2" style="color:#2d6a4f; line-height:1.4">${r[1]}</h5>
+          <div class="d-flex justify-content-between text-muted small border-top pt-2">
+            <div>
+              <i class="bi bi-upc-scan me-1"></i>${r[2]} 
+              </div>
+            <span class="badge bg-light text-dark border">${r[3]}</span>
+          </div>
+        </div>
+      `).join('');
     }
     function copyPickingText() { if (!currentPickingData) return; navigator.clipboard.writeText(currentPickingData.map(r => r[1]).join('\n')).then(() => Toast.fire({ icon: 'success', title: '已複製' })); }
     function confirmShippingDone() { Swal.fire({ title: '確認出貨完成？', icon: 'warning', showCancelButton: true, confirmButtonText: '是的' }).then(r => { if (r.isConfirmed) { showLoading(true); google.script.run.withSuccessHandler(() => { showLoading(false); Toast.fire({ icon: 'success', title: '完成' }); loadPickingList(); }).clearStagingArea(); } }); }

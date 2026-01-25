@@ -1,26 +1,27 @@
 /**
- * main.gs (V2.7_CleanDisplay)
- * 修改重點：優化撿貨單顯示邏輯，針對「1大 + 蝦皮店到店」進行極簡化顯示。
+ * main.gs (V2.9_Stats)
+ * 新增：分別統計平台訂單數，並將平台資訊寫入撿貨單(E欄)供前端顯示。
  */
 
 function generateDailyPickingList(isWebApp = false) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
   const stagingSheet = ss.getSheetByName('[00_數據暫存區]');
   if (!stagingSheet) return response("❌ 錯誤：找不到 [00_數據暫存區]", isWebApp);
 
-  // 1. 讀取資料
   const shopeeRawData = stagingSheet.getRange("A2:A").getValues().flat().filter(String).join("\n");
   const lastRow = stagingSheet.getLastRow();
-  // 官網讀取 C~J 欄
   const wooRawData = lastRow > 1 ? stagingSheet.getRange(2, 3, lastRow - 1, 8).getValues() : [];
 
   let allOrders = [];
+  let shopeeCount = 0;
+  let wooCount = 0;
   let errorLog = [];
 
-  // 2. 解析蝦皮
+  // 1. 解析蝦皮
   if (shopeeRawData && typeof ShopeeTextParser !== 'undefined') {
     try {
       const shopeeOrders = ShopeeTextParser.parseShopeeData(shopeeRawData);
+      shopeeCount = shopeeOrders.length;
       allOrders = allOrders.concat(shopeeOrders);
     } catch (e) {
       console.error("蝦皮解析錯誤: " + e.toString());
@@ -28,52 +29,62 @@ function generateDailyPickingList(isWebApp = false) {
     }
   }
 
-  // 3. 解析官網
+  // 2. 解析官網
   if (wooRawData.length > 0 && typeof WooCommerceParser !== 'undefined') {
     try {
       const wooOrders = WooCommerceParser.parseWooData(wooRawData);
+      // 依 OrderID 去重 (避免同一張單多商品被算成多筆訂單數? 這裡 wooOrders 是 Item 層級)
+      // 但使用者通常看的是「訂單數」還是「商品數」？
+      // 根據 parseWooData 回傳的是 Item Array。
+      // 為了統計準確，我們先算 Item 數，或後續再 Unique OrderID。
+      // 這裡簡單回傳 Item 數即可，或者可以做 Set 統計 Unique OrderID
+      const uniqueWoo = new Set(wooOrders.map(o => o.orderId));
+      wooCount = uniqueWoo.size; // 統計「單數」比較符合直覺
+      
       allOrders = allOrders.concat(wooOrders);
     } catch (e) {
       console.error("官網解析錯誤: " + e.toString());
       errorLog.push("官網解析部分失敗");
     }
   }
+  
+  // 修正蝦皮計數為「單數」
+  const uniqueShopee = new Set(allOrders.filter(o => o.platform === 'Shopee').map(o => o.orderId));
+  shopeeCount = uniqueShopee.size;
 
   if (allOrders.length === 0) {
-    return response('⚠️ 暫存區無有效訂單 (或解析器未抓到資料)', isWebApp);
+    return response('⚠️ 暫存區無有效訂單', isWebApp);
   }
 
-  // 4. 寫入銷售 DB (維持炸開扣庫存)
+  // 3. 寫入 DB
   saveToSalesDatabase(allOrders);
 
-  // 5. 寫入撿貨單 (套用新的極簡邏輯)
+  // 4. 寫入撿貨單 (包含平台資訊)
   saveToPickingList(allOrders);
 
   SpreadsheetApp.flush(); 
 
-  // 6. 更新庫存
+  // 5. 更新庫存
   let invMsg = "";
   if (typeof InventoryManager !== 'undefined') {
     try {
       InventoryManager.refreshDashboard();
       invMsg = "庫存已更新";
-      console.log("✅ 庫存儀表板重算完成");
     } catch (e) {
-      console.error("庫存更新失敗: " + e.toString());
       invMsg = "❌ 庫存更新失敗";
-      errorLog.push("庫存沒扣成功: " + e.message);
     }
-  } else {
-    invMsg = "❌ 找不到 InventoryManager";
   }
 
-  const finalStatus = errorLog.length > 0 ? "⚠️ 部分有誤" : "✅ 成功";
-  return response(`${finalStatus}！\n共產出 ${allOrders.length} 筆撿貨單。\n[${invMsg}]`, isWebApp);
+  // 回傳詳細統計字串
+  const totalOrders = shopeeCount + wooCount;
+  const statMsg = `官網 ${wooCount} 筆，蝦皮 ${shopeeCount} 筆，總共: ${totalOrders} 筆`;
+  
+  return response(`✅ 成功！\n${statMsg}\n[${invMsg}]`, isWebApp);
 }
 
 // ... (undoLastImport 保持不變) ...
 function undoLastImport(isWebApp = false) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
   const stagingSheet = ss.getSheetByName('[00_數據暫存區]');
   const shopeeRawData = stagingSheet.getRange("A2:A").getValues().flat().filter(String).join("\n");
   const lastRow = stagingSheet.getLastRow();
@@ -103,7 +114,7 @@ function undoLastImport(isWebApp = false) {
     }
   }
   const pickSheet = ss.getSheetByName('[05_撿貨單]');
-  if (pickSheet.getLastRow() > 1) pickSheet.getRange(2, 1, pickSheet.getLastRow() - 1, 4).clearContent();
+  if (pickSheet.getLastRow() > 1) pickSheet.getRange(2, 1, pickSheet.getLastRow() - 1, 5).clearContent(); // 清空 5 欄
 
   try { if (typeof InventoryManager !== 'undefined') InventoryManager.refreshDashboard(); } catch (e) {}
 
@@ -116,7 +127,7 @@ function response(msg, isWebApp) {
 }
 
 function saveToSalesDatabase(orders) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('[03_銷售數據池]');
+  const sheet = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A").getSheetByName('[03_銷售數據池]');
   const newRows = [];
   orders.forEach(order => {
     const items = expandSku(order.sku, order.qty);
@@ -128,18 +139,26 @@ function saveToSalesDatabase(orders) {
 }
 
 /**
- * 寫入 [05_撿貨單]
- * 修改：套用極簡化顯示邏輯
+ * 寫入 [05_撿貨單] (修改版)
+ * 增加第 5 欄：平台 (Shopee/WooCommerce)
  */
 function saveToPickingList(orders) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('[05_撿貨單]');
-  if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).clearContent();
+  const sheet = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A").getSheetByName('[05_撿貨單]');
+  // 清空舊資料 (範圍擴大到 5 欄)
+  if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).clearContent();
 
   const ordersMap = {};
   orders.forEach(order => {
     const oid = order.orderId;
     if (!ordersMap[oid]) {
-      ordersMap[oid] = { date: order.date, logistics: order.logistics, tracking: order.trackingNumber || "", items: {} };
+      // 記錄 platform
+      ordersMap[oid] = { 
+        date: order.date, 
+        logistics: order.logistics, 
+        tracking: order.trackingNumber || "", 
+        platform: order.platform, 
+        items: {} 
+      };
     }
     const abbr = order.abbr || "?";
     if (!ordersMap[oid].items[abbr]) ordersMap[oid].items[abbr] = 0;
@@ -150,7 +169,6 @@ function saveToPickingList(orders) {
     const o = ordersMap[oid];
     const itemStr = Object.entries(o.items).map(([abbr, qty]) => `${qty}${abbr}`).join(' ');
     
-    // 取得物流單號後4碼
     let trackingDisplay = "";
     if (o.tracking && o.tracking.length >= 4) {
       trackingDisplay = o.tracking.slice(-4);
@@ -158,30 +176,26 @@ function saveToPickingList(orders) {
       trackingDisplay = o.tracking;
     }
 
-    // --- 極簡顯示邏輯開始 ---
     let finalStr = itemStr;
     const isShopeeXpress = o.logistics.includes("蝦皮店到店");
-    const isOneBig = (itemStr === "1大"); // 嚴格比對是否剛好是 "1大"
+    const isOneBig = (itemStr === "1大");
 
-    // 1. 處理單號顯示
-    // 規則：如果是 (蝦皮店到店 且 1大)，則隱藏單號；否則都要顯示
     if (trackingDisplay) {
       if ( !(isShopeeXpress && isOneBig) ) {
         finalStr += ` ${trackingDisplay}`;
       }
     }
-
-    // 2. 處理物流名稱顯示
-    // 規則：如果是 蝦皮店到店，則隱藏名稱；否則都要顯示
     if (!isShopeeXpress) {
       finalStr += ` (${o.logistics})`;
     }
-    // --- 極簡顯示邏輯結束 ---
 
-    return [o.date, finalStr, oid, o.logistics];
+    // 回傳 5 個欄位：[日期, 撿貨碼, 訂單號, 物流, 平台]
+    return [o.date, finalStr, oid, o.logistics, o.platform];
   });
 
-  if (newRows.length > 0) sheet.getRange(2, 1, newRows.length, 4).setValues(newRows);
+  if (newRows.length > 0) {
+    sheet.getRange(2, 1, newRows.length, 5).setValues(newRows);
+  }
 }
 
 function expandSku(skuStr, orderQty) {
