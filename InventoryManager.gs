@@ -1,11 +1,10 @@
 /**
- * InventoryManager.gs (V2.6)
- * 修正：將函式包裝為物件 (Object)，以配合 main.gs 與 Code.gs 的呼叫。
+ * InventoryManager.gs (V2.8.1)
+ * 修正：將查帳結果 (Debug Log) 回傳，讓前端可以直接顯示算式。
  */
 
 var InventoryManager = {
   
-  // 設定檔
   CONFIG: {
     SHEET_NAMES: {
       DASHBOARD: '[00_儀表板]',
@@ -22,44 +21,55 @@ var InventoryManager = {
   },
 
   /**
-   * 主函式：重新計算並刷新儀表板
+   * 刷新儀表板
+   * @return {string} 查帳日誌 (Debug Info)
    */
   refreshDashboard: function() {
     const ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
-    let ui = null;
-    try { ui = SpreadsheetApp.getUi(); } catch (e) {}
+    console.log("=== [V2.8.1] 開始計算庫存 ===");
 
-    console.log("=== 開始計算庫存 (InventoryManager V2.6) ===");
-
-    // --- Step 1: 讀取並彙整數據 ---
-    
-    // 1.1 讀取 SKU 對照表
+    // 1. 讀取資料
     const skuMap = this._loadSkuMap(ss);
-    
-    // 1.2 彙整生產數據 (B欄=SKU, C欄=Qty)
     const productionMap = this._aggregateSheetData(ss, this.CONFIG.SHEET_NAMES.PRODUCTION, 1, 2);
-
-    // 1.3 彙整銷售數據 (D欄=SKU, E欄=Qty)
     const salesMap = this._aggregateSheetData(ss, this.CONFIG.SHEET_NAMES.SALES, 3, 4);
+
+    // --- 🕵️‍♂️ Debug 專區：查帳 wo_oil_100 ---
+    // 這次我們把訊息存起來，回傳給前端看
+    let debugInfo = "";
+    const debugTarget = "wo_oil_100";
+    
+    if (skuMap.has(debugTarget)) {
+      const p = productionMap.get(debugTarget) || 0;
+      const s = salesMap.get(debugTarget) || 0;
+      const finalStock = p - s;
+      debugInfo = `🔍 [查帳] ${debugTarget}\n生產 ${p} - 銷售 ${s} = 剩 ${finalStock}`;
+      console.log(debugInfo);
+    } else {
+      debugInfo = `⚠️ [查帳] 找不到 ${debugTarget} (請檢查 SKU 大小寫或空白)`;
+      console.warn(debugInfo);
+    }
+    // ------------------------------------
 
     const dashboardRows = [];
     
-    // --- Step 2: 計算邏輯 ---
+    // 2. 計算邏輯
     for (const [sku, info] of skuMap) {
       const prodQty = productionMap.get(sku) || 0;
       const salesQty = salesMap.get(sku) || 0;
       
       let currentStock = prodQty - salesQty;
 
-      // Lifecycle Rule
+      // 狀態過濾
       if (info.status === this.CONFIG.STATUS.SOFT_DELETE || info.status === this.CONFIG.STATUS.EOL) {
         currentStock = 0;
       }
       
-      // Health Check
+      // 燈號判斷
       let healthStatus = "✅ 正常";
       if (info.status !== this.CONFIG.STATUS.ACTIVE) {
         healthStatus = "❌ 已下架";
+      } else if (currentStock < 0) {
+        healthStatus = "🔥 超賣警示";
       } else if (currentStock <= this.CONFIG.LOW_STOCK_THRESHOLD) {
         healthStatus = "⚠️ 需補貨";
       }
@@ -73,88 +83,67 @@ var InventoryManager = {
       ]);
     }
 
-    // --- Step 3: 更新儀表板 ---
+    // 3. 寫入儀表板
     const dashSheet = ss.getSheetByName(this.CONFIG.SHEET_NAMES.DASHBOARD);
-    if (!dashSheet) {
-      console.error("找不到儀表板工作表");
-      return;
-    }
-
-    // 3.1 清空舊資料 (保留第一列 Header)
-    const lastRow = dashSheet.getLastRow();
-    if (lastRow > 1) {
-      dashSheet.getRange(2, 1, lastRow - 1, 5).clearContent().clearFormat();
-    }
-
-    // 3.2 寫入新資料
-    if (dashboardRows.length > 0) {
-      dashSheet.getRange(2, 1, dashboardRows.length, 5).setValues(dashboardRows);
+    if (dashSheet) {
+      const lastRow = dashSheet.getLastRow();
+      if (lastRow > 1) dashSheet.getRange(2, 1, lastRow - 1, 5).clearContent().clearFormat();
       
-      // 3.3 格式美化 (簡單版)
-      const range = dashSheet.getRange(2, 1, dashboardRows.length, 5);
-      const backgrounds = [];
-      const fontColors = [];
-      
-      for (let i = 0; i < dashboardRows.length; i++) {
-        const rowData = dashboardRows[i];
-        const stock = rowData[2];
-        const status = rowData[3];
+      if (dashboardRows.length > 0) {
+        dashSheet.getRange(2, 1, dashboardRows.length, 5).setValues(dashboardRows);
         
-        let bg = '#FFFFFF';
-        let font = '#000000';
-        
-        if (status !== this.CONFIG.STATUS.ACTIVE) {
-          font = '#999999';
-          bg = '#F3F3F3';
-        } else if (stock <= this.CONFIG.LOW_STOCK_THRESHOLD) {
-          bg = '#F4C7C3'; // 紅底
-        }
-        
-        // 填滿 5 格
-        backgrounds.push([bg, bg, bg, bg, bg]);
-        fontColors.push([font, font, font, font, font]);
+        // 格式化
+        const range = dashSheet.getRange(2, 1, dashboardRows.length, 5);
+        range.setHorizontalAlignment('center');
+        dashSheet.getRange(2, 1, dashboardRows.length, 1).setHorizontalAlignment('left');
       }
-      
-      range.setBackgrounds(backgrounds);
-      range.setFontColors(fontColors);
-      range.setHorizontalAlignment('center');
-      // 名稱靠左
-      dashSheet.getRange(2, 1, dashboardRows.length, 1).setHorizontalAlignment('left');
     }
-
-    console.log(`庫存計算完成，共更新 ${dashboardRows.length} 筆 SKU`);
+    console.log("✅ 庫存儀表板更新完成");
+    
+    return debugInfo; // 回傳查帳訊息
   },
 
   /**
-   * 輔助：讀取 SKU 對照表
+   * 檢查是否有超賣商品
    */
+  checkOversoldItems: function() {
+    const ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
+    const sheet = ss.getSheetByName(this.CONFIG.SHEET_NAMES.DASHBOARD);
+    if (!sheet) return [];
+    
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return [];
+    
+    const data = sheet.getRange(2, 1, lastRow - 1, 3).getValues(); 
+    const oversold = [];
+    
+    data.forEach(row => {
+      if (parseInt(row[2]) < 0) {
+        oversold.push({ name: row[0], stock: row[2] });
+      }
+    });
+    return oversold;
+  },
+
   _loadSkuMap: function(ss) {
     const sheet = ss.getSheetByName(this.CONFIG.SHEET_NAMES.SKU_MAP);
     const lastRow = sheet.getLastRow();
     const map = new Map();
-    
     if (lastRow < 2) return map;
     
-    // A~F (A=SKU, B=Name, F=Status)
     const data = sheet.getRange(2, 1, lastRow - 1, 6).getValues();
-    
-    const ACTIVE = this.CONFIG.STATUS.ACTIVE;
-    
     data.forEach(row => {
-      const sku = String(row[0]).trim();
+      const sku = this._cleanSku(row[0]);
       if (sku) {
         map.set(sku, {
           name: row[1],
-          status: row[5] || ACTIVE
+          status: row[5] || this.CONFIG.STATUS.ACTIVE
         });
       }
     });
     return map;
   },
 
-  /**
-   * 輔助：彙整 Sheet 數量
-   */
   _aggregateSheetData: function(ss, sheetName, skuColIdx, qtyColIdx) {
     const sheet = ss.getSheetByName(sheetName);
     const map = new Map();
@@ -166,7 +155,7 @@ var InventoryManager = {
     const data = sheet.getRange(2, 1, lastRow - 1, maxCols).getValues();
     
     data.forEach(row => {
-      const sku = String(row[skuColIdx]).trim();
+      const sku = this._cleanSku(row[skuColIdx]);
       const qty = Number(row[qtyColIdx]);
       
       if (sku && !isNaN(qty)) {
@@ -175,5 +164,10 @@ var InventoryManager = {
       }
     });
     return map;
+  },
+
+  _cleanSku: function(rawSku) {
+    if (!rawSku) return "";
+    return String(rawSku).trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
   }
 };

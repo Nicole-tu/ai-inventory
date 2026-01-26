@@ -1,12 +1,12 @@
 /**
- * main.gs (V2.9_Stats)
- * 新增：分別統計平台訂單數，並將平台資訊寫入撿貨單(E欄)供前端顯示。
+ * main.gs (V2.8.1_DebugDisplay)
+ * 修改：將 InventoryManager 回傳的查帳訊息顯示在前端 Alert 中。
  */
 
 function generateDailyPickingList(isWebApp = false) {
   const ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
   const stagingSheet = ss.getSheetByName('[00_數據暫存區]');
-  if (!stagingSheet) return response("❌ 錯誤：找不到 [00_數據暫存區]", isWebApp);
+  if (!stagingSheet) return response("❌ 找不到 [00_數據暫存區]", isWebApp);
 
   const shopeeRawData = stagingSheet.getRange("A2:A").getValues().flat().filter(String).join("\n");
   const lastRow = stagingSheet.getLastRow();
@@ -15,74 +15,64 @@ function generateDailyPickingList(isWebApp = false) {
   let allOrders = [];
   let shopeeCount = 0;
   let wooCount = 0;
-  let errorLog = [];
 
-  // 1. 解析蝦皮
+  // 1. 解析
   if (shopeeRawData && typeof ShopeeTextParser !== 'undefined') {
     try {
       const shopeeOrders = ShopeeTextParser.parseShopeeData(shopeeRawData);
-      shopeeCount = shopeeOrders.length;
+      const uniqueShopee = new Set(shopeeOrders.map(o => o.orderId));
+      shopeeCount = uniqueShopee.size;
       allOrders = allOrders.concat(shopeeOrders);
-    } catch (e) {
-      console.error("蝦皮解析錯誤: " + e.toString());
-      errorLog.push("蝦皮解析部分失敗");
-    }
+    } catch (e) { console.error(e); }
   }
 
-  // 2. 解析官網
   if (wooRawData.length > 0 && typeof WooCommerceParser !== 'undefined') {
     try {
       const wooOrders = WooCommerceParser.parseWooData(wooRawData);
-      // 依 OrderID 去重 (避免同一張單多商品被算成多筆訂單數? 這裡 wooOrders 是 Item 層級)
-      // 但使用者通常看的是「訂單數」還是「商品數」？
-      // 根據 parseWooData 回傳的是 Item Array。
-      // 為了統計準確，我們先算 Item 數，或後續再 Unique OrderID。
-      // 這裡簡單回傳 Item 數即可，或者可以做 Set 統計 Unique OrderID
       const uniqueWoo = new Set(wooOrders.map(o => o.orderId));
-      wooCount = uniqueWoo.size; // 統計「單數」比較符合直覺
-      
+      wooCount = uniqueWoo.size;
       allOrders = allOrders.concat(wooOrders);
-    } catch (e) {
-      console.error("官網解析錯誤: " + e.toString());
-      errorLog.push("官網解析部分失敗");
-    }
-  }
-  
-  // 修正蝦皮計數為「單數」
-  const uniqueShopee = new Set(allOrders.filter(o => o.platform === 'Shopee').map(o => o.orderId));
-  shopeeCount = uniqueShopee.size;
-
-  if (allOrders.length === 0) {
-    return response('⚠️ 暫存區無有效訂單', isWebApp);
+    } catch (e) { console.error(e); }
   }
 
-  // 3. 寫入 DB
+  if (allOrders.length === 0) return response('⚠️ 無有效訂單', isWebApp);
+
+  // 2. 寫入 DB
   saveToSalesDatabase(allOrders);
 
-  // 4. 寫入撿貨單 (包含平台資訊)
+  // 3. 寫入撿貨單
   saveToPickingList(allOrders);
 
   SpreadsheetApp.flush(); 
 
-  // 5. 更新庫存
+  // 4. 更新庫存並檢查超賣
   let invMsg = "";
+  let alertMsg = "";
+  let debugLog = "";
+  
   if (typeof InventoryManager !== 'undefined') {
     try {
-      InventoryManager.refreshDashboard();
+      // 接收回傳的查帳字串
+      debugLog = InventoryManager.refreshDashboard();
+      
+      const oversoldList = InventoryManager.checkOversoldItems();
+      if (oversoldList.length > 0) {
+        const itemsStr = oversoldList.map(i => `${i.name}(${i.stock})`).join(', ');
+        alertMsg = `\n🔥 嚴重警告：庫存不足！\n${itemsStr}`;
+      }
+      
       invMsg = "庫存已更新";
     } catch (e) {
-      invMsg = "❌ 庫存更新失敗";
+      invMsg = "❌ 庫存計算失敗";
     }
   }
 
-  // 回傳詳細統計字串
-  const totalOrders = shopeeCount + wooCount;
-  const statMsg = `官網 ${wooCount} 筆，蝦皮 ${shopeeCount} 筆，總共: ${totalOrders} 筆`;
-  
-  return response(`✅ 成功！\n${statMsg}\n[${invMsg}]`, isWebApp);
+  const total = shopeeCount + wooCount;
+  // 將 debugLog 加入回傳訊息
+  return response(`✅ 成功！\n官網: ${wooCount} | 蝦皮: ${shopeeCount} | 總共: ${total}\n${alertMsg}\n\n${debugLog}`, isWebApp);
 }
 
-// ... (undoLastImport 保持不變) ...
+// ... (其餘函式 undoLastImport, saveToSalesDatabase 等保持不變) ...
 function undoLastImport(isWebApp = false) {
   const ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
   const stagingSheet = ss.getSheetByName('[00_數據暫存區]');
@@ -99,7 +89,7 @@ function undoLastImport(isWebApp = false) {
   }
   orderIdsToRemove = [...new Set(orderIdsToRemove)];
 
-  if (orderIdsToRemove.length === 0) return response("⚠️ 無法識別訂單號，無法復原。", isWebApp);
+  if (orderIdsToRemove.length === 0) return response("⚠️ 無法識別訂單號", isWebApp);
 
   const dbSheet = ss.getSheetByName('[03_銷售數據池]');
   const dbLastRow = dbSheet.getLastRow();
@@ -114,7 +104,7 @@ function undoLastImport(isWebApp = false) {
     }
   }
   const pickSheet = ss.getSheetByName('[05_撿貨單]');
-  if (pickSheet.getLastRow() > 1) pickSheet.getRange(2, 1, pickSheet.getLastRow() - 1, 5).clearContent(); // 清空 5 欄
+  if (pickSheet.getLastRow() > 1) pickSheet.getRange(2, 1, pickSheet.getLastRow() - 1, 5).clearContent();
 
   try { if (typeof InventoryManager !== 'undefined') InventoryManager.refreshDashboard(); } catch (e) {}
 
@@ -138,27 +128,15 @@ function saveToSalesDatabase(orders) {
   if (newRows.length > 0) sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, 6).setValues(newRows);
 }
 
-/**
- * 寫入 [05_撿貨單] (修改版)
- * 增加第 5 欄：平台 (Shopee/WooCommerce)
- */
 function saveToPickingList(orders) {
   const sheet = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A").getSheetByName('[05_撿貨單]');
-  // 清空舊資料 (範圍擴大到 5 欄)
   if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).clearContent();
 
   const ordersMap = {};
   orders.forEach(order => {
     const oid = order.orderId;
     if (!ordersMap[oid]) {
-      // 記錄 platform
-      ordersMap[oid] = { 
-        date: order.date, 
-        logistics: order.logistics, 
-        tracking: order.trackingNumber || "", 
-        platform: order.platform, 
-        items: {} 
-      };
+      ordersMap[oid] = { date: order.date, logistics: order.logistics, tracking: order.trackingNumber || "", platform: order.platform, items: {} };
     }
     const abbr = order.abbr || "?";
     if (!ordersMap[oid].items[abbr]) ordersMap[oid].items[abbr] = 0;
@@ -189,13 +167,10 @@ function saveToPickingList(orders) {
       finalStr += ` (${o.logistics})`;
     }
 
-    // 回傳 5 個欄位：[日期, 撿貨碼, 訂單號, 物流, 平台]
     return [o.date, finalStr, oid, o.logistics, o.platform];
   });
 
-  if (newRows.length > 0) {
-    sheet.getRange(2, 1, newRows.length, 5).setValues(newRows);
-  }
+  if (newRows.length > 0) sheet.getRange(2, 1, newRows.length, 5).setValues(newRows);
 }
 
 function expandSku(skuStr, orderQty) {

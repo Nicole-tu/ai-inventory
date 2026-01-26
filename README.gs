@@ -4,9 +4,9 @@
  * ============================================================================
  *
  * # 專案概觀
- * - **版本：** V2.6 (2026/01/25)
- * - **狀態：** Stable / Production
- * - **核心邏輯：** Allocation on Import (匯入即扣庫存) + Undo Capability (可撤銷)
+ * - **版本：** V2.8.1 (2026/01/26)
+ * - **狀態：** Stable Production (Golden Version)
+ * - **核心價值：** 強韌解析 (Robust Parsing) + 數據潔淨 (Sanitization) + 即時反饋 (Instant Feedback)
  *
  * ---
  *
@@ -15,41 +15,42 @@
  * ### 📱 Mobile Web App
  * | 檔名 | 類型 | 說明 |
  * | :--- | :--- | :--- |
- * | **`Code.gs`** | API | Web App 入口。實作 `LockService`。新增 `triggerUndoImport` 接口。 |
- * | **`index.html`** | UI | 響應式介面。包含「產生撿貨單(黃)」與「回復上一步(紅)」按鈕。 |
+ * | **`Code.gs`** | API | (V2.5) Web App 入口。實作 `LockService`，提供 `doGet` 與資料讀取接口。 |
+ * | **`index.html`** | UI | (V2.9) 響應式介面。包含「身分切換」、「平台訂單統計 Badge」、「紅/黃功能鍵」。 |
  *
  * ### ⚙️ Backend Logic
  * | 檔名 | 類型 | 說明 |
  * | :--- | :--- | :--- |
- * | **`main.gs`** | Controller | **系統中樞**。負責：<br>1. 呼叫 Parser 解析雙平台資料。<br>2. 執行 `saveToSalesDatabase` (炸開扣庫存)。<br>3. 執行 `saveToPickingList` (合併顯示)。<br>4. **強制執行** `InventoryManager` 更新庫存。<br>5. 實作 `undoLastImport` 復原機制。 |
- * | **`InventoryManager.gs`** | Core | **(V2.6 重構)** 改為 Object 物件寫法。負責讀取生產/銷售紀錄，計算並刷新 `[00_儀表板]`。 |
- * | **`ShopeeTextParser.gs`** | Parser | **(V2.6 優化)** 採用關鍵字定位與寬鬆 Regex，支援英數混合單號解析，防止 Timeout。 |
- * | **`WooCommerceParser.gs`** | Parser | **(V2.6 優化)** 放寬 Quantity 解析標準，支援各種格式的官網表格。 |
- * | **`Archiver.gs`** | Bot | 歷史資料自動封存機器人 (每月執行)。 |
+ * | **`main.gs`** | Controller | **(V2.8.1)** 系統中樞。負責流程整合：<br>1. 呼叫 Parser 解析雙平台。<br>2. 執行 DB 寫入 (炸開組合包)。<br>3. 執行撿貨單寫入 (極簡顯示邏輯)。<br>4. **接收 InventoryManager 回傳的 Debug Log 與超賣警報，並傳回前端顯示。** |
+ * | **`InventoryManager.gs`** | Core | **(V2.8.1)** 庫存運算核心。<br>1. **Sanitization**: 強制清除 SKU 隱形字元 (零寬空格)，解決比對失敗問題。<br>2. **Audit**: 針對特定 SKU (如 wo_oil_100) 產生算式日誌。<br>3. **Alert**: 偵測庫存 < 0 的商品。 |
+ * | **`ShopeeTextParser.gs`** | Parser | **(V2.7.3)** 強力解析器。<br>1. **Masking**: 遮蔽訂單編號 (避免 KX2 誤判)。<br>2. **Cursor Scan**: 游標掃描法處理單行多商品。<br>3. **Anti-Sticky**: 解決 `x2NT$500` 沾黏問題。 |
+ * | **`WooCommerceParser.gs`** | Parser | **(V2.6)** 寬鬆模式。支援各種 Quantity 格式 (x 1, × 1)。 |
+ * | **`setup.gs`** | Utils | (V2.3) 初始化腳本。建立標準 7+1 張工作表。 |
+ * | **`Archiver.gs`** | Bot | 自動封存機器人 (每月執行)。 |
  *
  * ---
  *
- * ## 2. 關鍵流程 (Workflows)
+ * ## 2. 關鍵流程與機制 (Key Mechanisms)
  *
- * ### A. 每日訂單匯入 (Daily Import)
- * 1. **Trigger**: 手機/電腦觸發 `generateDailyPickingList`。
- * 2. **Parse**: 讀取 `[00_數據暫存區]`，同時解析蝦皮與官網資料。
- * 3. **Action 1 (DB)**: 寫入 `[03_銷售數據池]` -> **炸開組合包** (如 A*10 拆成 10 個 A)。
- * 4. **Action 2 (Picking)**: 寫入 `[05_撿貨單]` -> **依單號合併** (如 "3雪 10菜")，並附上物流單號後4碼。
- * 5. **Update**: 強制呼叫 `InventoryManager.refreshDashboard()`。即使解析有部分警告，仍會嘗試更新庫存。
+ * ### A. 資料潔淨化 (Data Sanitization) [V2.8 New]
+ * - 在 `InventoryManager` 讀取 `[02]`, `[03]`, `[04]` 所有 Sheet 時，會經過 `_cleanSku()`。
+ * - 功能：移除 `\u200B` (零寬空格) 與前後空白，確保 "SKU " 與 "SKU" 被視為相同。
  *
- * ### B. 撤銷匯入 (Undo Import)
- * 1. **Trigger**: 觸發 `undoLastImport`。
- * 2. **Process**: 重新掃描暫存區 -> 找出涉及的 Order IDs。
- * 3. **Delete**: 從 `[03_銷售數據池]` 刪除對應的資料列。
- * 4. **Restore**: 清空 `[05_撿貨單]` 並重算庫存。
+ * ### B. 雙重解析防護 (Dual-Layer Parsing Protection) [V2.7 New]
+ * - **Layer 1 (Masking)**: 先將內文中的 `訂單編號` 替換為 `________`，防止 Regex 誤抓單號末碼為數量。
+ * - **Layer 2 (Cleaning)**: 解析出商品字串後，自動切除 `件折`、`NT$`、`商品規格:` 等雜訊。
+ *
+ * ### C. 超賣與查帳反饋 (Oversell & Audit Feedback) [V2.8 New]
+ * - `generateDailyPickingList` 執行後，不僅回傳「成功」，還會附帶：
+ * 1. **平台統計**: 官網 vs 蝦皮 筆數。
+ * 2. **超賣警報**: 若庫存 < 0，顯示 🔥 紅色警告。
+ * 3. **查帳日誌**: 顯示指標商品 (wo_oil_100) 的 `生產 - 銷售 = 庫存` 算式，供管理員驗證。
  *
  * ---
  *
  * ## 3. Schema 備註
- * - **[04_SKU對照表]**: 必須包含 C 欄 (撿貨簡稱) 與 D/E 欄 (平台關鍵字)。
- * - **[05_撿貨單]**: B 欄格式為 `[數量][簡稱] [單號後4碼] ([物流])`。
- *
+ * - **[05_撿貨單]**: V2.9 擴充為 5 欄：`[日期, 撿貨內容, 訂單號, 物流, 平台]`。
+ * - **[00_數據暫存區]**: A欄=蝦皮(文字流), C欄=官網(表格)。
  */
 
 function README() {
