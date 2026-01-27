@@ -1,8 +1,8 @@
 /**
- * ShopeeTextParser.gs (V2.7.3)
+ * ShopeeTextParser.gs (V3.1_Hotfix)
  * 修正：
- * 1. 解決訂單編號結尾含 "X2" 導致誤判數量與商品 (產生 2? 幽靈商品)。
- * 2. 強化單行多商品的切割能力。
+ * 1. 移除對 "*" 作為乘號的支援，避免 "10*7cm" 的尺寸規格被誤判為數量。
+ * 2. 僅使用 "x" 或 "X" 作為數量切割點 (符合蝦皮格式)。
  */
 
 var ShopeeTextParser = {
@@ -49,13 +49,12 @@ var ShopeeTextParser = {
         }
       }
 
-      // 4. 解析商品 (V2.7.3)
-      
-      // 【關鍵修正】遮蔽訂單編號，避免 "...KX2" 被誤判為 "x2"
+      // 4. 解析商品
+      // 遮蔽訂單編號
       var safeBlock = fullBlock.split(orderId).join("__________");
 
-      // Regex: [xX*] 匹配乘號, \s* 允許空白, (\d+) 抓取數字
-      var itemRegex = /[xX*]\s*(\d+)/g;
+      // 【關鍵修正】只抓 x 或 X，不抓 * (避免 10*7cm 被切斷)
+      var itemRegex = /[xX]\s*(\d+)/g; 
       var match;
       var lastIndex = 0;
       
@@ -63,14 +62,10 @@ var ShopeeTextParser = {
         var qty = parseInt(match[1], 10) || 1;
         var endIndex = match.index;
         
-        // 抓取「上一次游標」到「這次 x數量」中間的文字
         var rawSegment = safeBlock.substring(lastIndex, endIndex).trim();
-        
-        // 更新游標
         lastIndex = endIndex + match[0].length; 
 
-        // --- 清洗與過濾 ---
-        
+        // --- 清洗邏輯 ---
         if (rawSegment.length < 2) continue;
 
         if (rawSegment.includes("商品規格:")) {
@@ -83,7 +78,7 @@ var ShopeeTextParser = {
            rawSegment = lines[lines.length - 1].trim();
         }
 
-        // 切除 NT$
+        // 切除 NT$ (及前面的件折)
         if (rawSegment.includes("NT$")) {
            rawSegment = rawSegment.replace(/^(件折\s*)?NT\$[\d,]+\s*/, "");
         }
@@ -99,15 +94,15 @@ var ShopeeTextParser = {
         // 嚴格模式：過濾雜訊
         var isNoise = rawSegment.includes("信用卡") || 
                       rawSegment.includes("待出貨") || 
-                      rawSegment.includes("___") || // 被遮蔽的訂單號
-                      /^[0-9,.]+$/.test(rawSegment); // 純數字
+                      rawSegment.includes("___") || 
+                      /^[0-9,.]+$/.test(rawSegment); 
 
         if (mapped.sku !== "Unknown" || (rawSegment.length > 2 && !isNoise)) {
            orders.push({
               date: new Date(),
               orderId: orderId,
               platform: 'Shopee',
-              productName: rawSegment, // 原始名稱
+              productName: rawSegment,
               sku: mapped.sku,
               abbr: mapped.abbr,
               qty: qty,
@@ -123,7 +118,7 @@ var ShopeeTextParser = {
   },
 
   _getSkuMap: function() {
-    var ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName('[04_SKU對照表]');
     var lastRow = sheet.getLastRow();
     if (lastRow < 2) return [];
@@ -143,7 +138,6 @@ var ShopeeTextParser = {
         return { sku: map[i].sku, abbr: map[i].abbr };
       }
     }
-    // 寬鬆比對 (去空白)
     var normalizedName = rawName.replace(/\s+/g, "");
     for (var j = 0; j < map.length; j++) {
       var normalizedKeyword = map[j].keyword.replace(/\s+/g, "");
