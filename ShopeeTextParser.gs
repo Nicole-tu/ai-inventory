@@ -118,7 +118,7 @@ var ShopeeTextParser = {
   },
 
   _getSkuMap: function() {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
     var sheet = ss.getSheetByName('[04_SKU對照表]');
     var lastRow = sheet.getLastRow();
     if (lastRow < 2) return [];
