@@ -1,38 +1,40 @@
 # 專案背景 (Project Context)
-本專案為「在森林那邊 - 輕量級電商庫存管理系統 (ERP V2.8.1)」，基於 Google Sheets 與 Google Apps Script (GAS) 開發。
+本專案為「在森林那邊 - 輕量級電商庫存管理系統 (ERP V3.1 Clean)」，基於 Google Sheets 與 Google Apps Script (GAS) 開發。
 
-## 1. 目前版本狀態：V2.8.1 (Golden Stable)
-本版本已解決 **庫存準確性 (Data Integrity)**、**解析強韌性 (Robust Parsing)** 與 **操作容錯率 (Fault Tolerance)** 三大核心問題，為目前最穩定的生產版本。
+## 1. 目前版本狀態：V3.1 (Clean Version)
+本版本移除複雜的 Webhook 即時串接，回歸 **「批次處理」** 與 **「排程報告」** 核心，追求系統的最大穩定性與低維護成本。
 
-### ✅ 核心功能與技術突破
-- **雙平台整合**: 支援蝦皮 (Shopee) 與官網 (WooCommerce) 訂單解析與合併統計。
-- **強韌解析器 (ShopeeTextParser V2.7.3)**: 
-  - **Masking 技術**: 預先遮蔽訂單編號，防止 `...KX2` 被誤判為數量 `x2`。
-  - **Cursor Scanning**: 支援單行多商品解析 (如 `...商品Ax1商品Bx1...`)。
-  - **Anti-Sticky**: 解決 `x2NT$560` 文字沾黏問題。
-- **庫存守門員 (InventoryManager V2.8.1)**: 
-  - **Data Sanitization**: 強制清除 SKU 中的隱形字元 (Zero-width space) 與空白，確保扣庫存 100% 命中。
-  - **Oversell Alert**: 偵測到庫存 < 0 時，回傳 `🔥 嚴重警告` 至前端。
-  - **Debug Feedback**: 回傳特定商品 (如 `wo_oil_100`) 的算式日誌 (`生產-銷售=庫存`) 供前端查帳。
-- **容錯機制 (Undo)**: 支援「回復上一步」，可自動刪除誤匯入的銷售紀錄並回補庫存。
-- **極簡化 UI (V2.9)**: 針對高頻訂單 (1大+蝦皮店到店) 隱藏冗餘資訊，提升撿貨效率。
+### ✅ 核心功能
+- **雙平台解析 (Batch Parsing)**: 
+  - 支援手動貼上 **蝦皮 (Shopee)** 與 **官網 (WooCommerce)** 訂單文字/表格，一鍵解析並合併撿貨。
+  - 官網改為手動複製後台列表至暫存區 C 欄，不再依賴即時 Webhook。
+- **庫存守門員 (InventoryManager)**: 
+  - **Oversell Alert**: 產生撿貨單時，若偵測到庫存 < 0，立即回傳 🔥 嚴重警告。
+  - **Safety Stock**: 支援紅綠燈水位判斷 (✅ 正常 / ⚠️ 需補貨)。
+- **排程自動化 (Automation)**:
+  - **每週補貨報告**: 每週一自動檢查低水位商品，發送 LINE 通知。
+  - **每日晨報**: 可手動觸發或排程發送當日庫存異常。
+- **操作容錯 (Undo)**: 支援「回復上一步」，可自動刪除誤匯入的銷售紀錄並回補庫存。
 
 ### 🛠️ 技術架構
-- **InventoryManager**: Singleton Object 設計，提供 `refreshDashboard()` 與 `checkOversoldItems()` API。
-- **Main Controller**: `main.gs` 負責協調 Parser 與 Manager，並將後端日誌 (Logs) 封裝回傳給前端 SweetAlert。
-- **LockService**: 全寫入操作皆受並發鎖保護。
+- **Web App**: 作為主要操作介面 (index.html)，提供撿貨、入庫、盤點功能。
+- **LockService**: 全寫入操作 (入庫/盤點/扣庫存) 皆受並發鎖保護，防止多人操作衝突。
+- **LineMessaging**: 負責發送 LINE Notify 通知 (補貨報告、撿貨單)。
 
-## 2. 未來規劃 (Roadmap V3.0)
-下階段將專注於「自動化」與「多平台回寫」。
+## 2. 未來規劃 (Roadmap)
+下階段將專注於「數據同步」與「精細化成本管理」。
 
-- **[P1] 多平台庫存同步**: 
-  - 開發「庫存更新檔生成器」，一鍵產出蝦皮/官網所需的 CSV 格式。
-- **[P2] BOM (配方表) 自動化**: 
-  - 建立 `[01_BOM設定]`，實現「賣出 1 個 A，扣除 0.5kg 原料」的進階扣料邏輯。
-- **[P3] Line Notify 通知**: 
-  - 每日定時發送庫存缺貨警報與業績摘要。
+- **[P1] 多平台庫存回寫 (Multi-platform Sync)**: 
+  - 目標：解決蝦皮與官網庫存不同步問題。
+  - 實作：開發 **Batch Export** 功能，一鍵生成符合「蝦皮大量更新」格式的 Excel/CSV 檔，手動上傳即可同步庫存。
+- **[P2] BOM 自動扣料機制 (Bill of Materials)**: 
+  - 目標：精準管理原料庫存。
+  - 實作：建立 `[06_配方表]`，設定「成品 vs 原料」對應關係。當成品入庫時，自動扣除對應原料 (如：蜂蠟、亞麻仁油)。
+- **[P3] 材積與運費試算 (Carton Calculation)**: 
+  - 目標：解決包貨時紙箱選擇困難。
+  - 實作：在 SKU 表加入長寬高與重量，生成撿貨單時自動計算該筆訂單適合的紙箱尺寸 (60/90/120 cm)。
 
 ## 3. 指令規範 (Instruction for AI)
-- 修改程式碼時，**嚴禁** 移除 `_cleanSku` 去汙邏輯與 `Masking` 遮蔽邏輯。
-- 保持 `main.gs` 的回傳格式，確保前端能正確顯示 Debug Log。
-- 涉及庫存寫入的操作，必須保留 `LockService`。
+- 修改程式碼時，**嚴禁** 移除 `_cleanSku` 去汙邏輯。
+- 保持 `Code.gs` 的潔淨，不要隨意加入外部 Webhook 接收邏輯。
+- 所有庫存寫入操作必須保留 `LockService`。
