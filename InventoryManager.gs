@@ -54,7 +54,7 @@ var InventoryManager = {
     return this._checkItems((stock, safety) => stock >= 0 && stock <= safety);
   },
 
-  // 共用檢查邏輯
+  // 共用檢查邏輯(已修正：排除組合商品)
   _checkItems: function(predicate) {
     const ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
     const sheet = ss.getSheetByName(this.CONFIG.SHEET_NAMES.DASHBOARD);

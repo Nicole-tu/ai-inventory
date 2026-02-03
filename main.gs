@@ -93,31 +93,79 @@ function generateDailyPickingList(isWebApp = false) {
 // ... (以下為輔助函式，請覆蓋 saveToPickingList 以支援回傳文字) ...
 
 function saveToPickingList(orders) {
-  const sheet = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A").getSheetByName('[05_撿貨單]');
+  const ss = SpreadsheetApp.openById("16IP78MRPyFg73ummLQT8skJV5LbbdEVYSwgFoIrtD5A");
+  const sheet = ss.getSheetByName('[05_撿貨單]');
+  const skuSheet = ss.getSheetByName('[04_SKU對照表]');
+
+  // 1. 先建立 SKU -> 簡稱 的對照表 (為了把炸開後的 SKU 轉回簡稱)
+  const skuData = skuSheet.getRange(2, 1, skuSheet.getLastRow() - 1, 3).getValues();
+  const skuToAbbrMap = {};
+  skuData.forEach(row => {
+    // row[0] = 內部SKU, row[2] = 撿貨簡稱
+    // 我們只存「單品」的簡稱，因為組合包已經被炸開了，用不到組合包的簡稱
+    if (row[0] && row[2]) {
+      skuToAbbrMap[String(row[0]).trim()] = String(row[2]).trim();
+    }
+  });
+
+  // 清空舊資料
   if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).clearContent();
   
   const ordersMap = {};
+
   orders.forEach(order => {
     const oid = order.orderId;
-    if (!ordersMap[oid]) ordersMap[oid] = { date: order.date, logistics: order.logistics, tracking: order.trackingNumber||"", platform: order.platform, items: {} };
-    const abbr = order.abbr || "?";
-    if (!ordersMap[oid].items[abbr]) ordersMap[oid].items[abbr] = 0;
-    ordersMap[oid].items[abbr] += order.qty;
+    if (!ordersMap[oid]) {
+      ordersMap[oid] = { 
+        date: order.date, 
+        logistics: order.logistics, 
+        tracking: order.trackingNumber || "", 
+        platform: order.platform, 
+        items: {} // 這裡改用 SKU 當 key，而不是簡稱
+      };
+    }
+
+    // 🔥 關鍵改變：使用 expandSku 把商品「炸開」成單品
+    // 假設 order.sku 是 "wo_loofah_01*10" 且 qty 是 2
+    // expandSku 會回傳 [{sku: "wo_loofah_01", qty: 20}]
+    const components = expandSku(order.sku, order.qty);
+
+    components.forEach(comp => {
+      // 嘗試找出單品的簡稱 (例如 wo_loofah_01 -> 菜)
+      // 如果找不到 (可能是新品)，就暫時顯示 SKU 本身
+      const abbr = skuToAbbrMap[comp.sku] || comp.sku; 
+
+      if (!ordersMap[oid].items[abbr]) {
+        ordersMap[oid].items[abbr] = 0;
+      }
+      // 累加數量
+      ordersMap[oid].items[abbr] += comp.qty;
+    });
   });
 
+  // 3. 轉成文字格式
   const newRows = Object.keys(ordersMap).map(oid => {
     const o = ordersMap[oid];
-    const itemStr = Object.entries(o.items).map(([abbr, qty]) => `${qty}${abbr}`).join(' ');
+    
+    // 組合字串：數量 + 簡稱 (例如 "20菜")
+    const itemStr = Object.entries(o.items)
+      .map(([abbr, qty]) => `${qty}${abbr}`)
+      .join(' ');
+
     let tracking = o.tracking;
-    if (tracking.length >= 4) tracking = tracking.slice(-4);
+    if (tracking.length >= 4) tracking = tracking.slice(-4); // 只取後四碼
     
     let finalStr = itemStr;
     const isShopeeXpress = o.logistics.includes("蝦皮店到店");
-    const isOneBig = (itemStr === "1大");
     
+    // 特殊邏輯：如果是蝦皮店到店，且內容只有 "1大" (大長砧)，則隱藏單號 (讓畫面乾淨)
+    // 注意：這裡的 "1大" 是指炸開後的結果
+    const isOneBigOnly = (itemStr === "1大"); 
+
     if (tracking) {
-      if (!(isShopeeXpress && isOneBig)) finalStr += ` ${tracking}`;
+      if (!(isShopeeXpress && isOneBigOnly)) finalStr += ` ${tracking}`;
     }
+    
     if (!isShopeeXpress) finalStr += ` (${o.logistics})`;
     
     return [o.date, finalStr, oid, o.logistics, o.platform];
@@ -125,8 +173,7 @@ function saveToPickingList(orders) {
 
   if (newRows.length > 0) sheet.getRange(2, 1, newRows.length, 5).setValues(newRows);
   
-  // V3.1 新增：回傳文字給 LINE 用
-  return newRows.map(row => row[1]).join('\n'); 
+  return newRows.map(row => row[1]).join('\n');
 }
 
 function undoLastImport(isWebApp = false) {
